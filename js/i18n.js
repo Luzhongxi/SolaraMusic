@@ -83,7 +83,29 @@
         "保存设置": "Save Settings",
         "已保存设置": "Settings saved",
         "请至少选择一个风格": "Please select at least one genre",
-        "云端加载设置失败": "Failed to load settings from cloud"
+        "云端加载设置失败": "Failed to load settings from cloud",
+        // Category translations
+        "全部": "All",
+        "添加分类": "Add Category",
+        "管理分类": "Manage Categories",
+        "输入分类名称...": "Enter category name...",
+        "添加": "Add",
+        "取消": "Cancel",
+        "保存": "Save",
+        "删除": "Delete",
+        "关闭": "Close",
+        "重命名分类": "Rename Category",
+        "添加到分类": "Add to Category",
+        "新建分类...": "New Category...",
+        "该分类下暂无歌曲": "No songs in this category",
+        "右键点击歌曲可添加到分类": "Right-click a song to add to category",
+        "暂无分类": "No categories",
+        "暂无分类，请先创建": "No categories, create one first",
+        "首": "songs",
+        "分类数据已导出": "Categories exported",
+        "分类数据已导入": "Categories imported",
+        "无效的分类数据文件": "Invalid category data file",
+        "解析分类文件失败": "Failed to parse category file"
     };
 
     window.t = function (str) {

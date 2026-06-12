@@ -6491,6 +6491,7 @@ function applySettingsToUI() {
     bootstrapPersistentStorage = async function() {
         await originalBootstrap();
         initSettings();
+        initCategorySystem();
     };
 })();
 
@@ -6498,5 +6499,597 @@ function applySettingsToUI() {
 document.addEventListener("DOMContentLoaded", () => {
     if (!remoteSyncEnabled) {
         initSettings();
+        initCategorySystem();
     }
 });
+
+// ==================== Category Management System ====================
+
+// HTML escape function
+function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+const CATEGORY_COLORS = [
+    '#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899',
+    '#f43f5e', '#ef4444', '#f97316', '#f59e0b', '#eab308',
+    '#84cc16', '#22c55e', '#10b981', '#14b8a6', '#06b6d4',
+    '#0ea5e9', '#3b82f6', '#6366f1'
+];
+
+let categoryState = {
+    categories: [],
+    songCategories: {}, // { songKey: [categoryId, ...] }
+    activeFilter: 'all'
+};
+
+function getCategoryStorageKey() {
+    return 'solara_categories';
+}
+
+function getSongCategoriesStorageKey() {
+    return 'solara_song_categories';
+}
+
+function loadCategories() {
+    try {
+        const categoriesData = safeGetLocalStorage(getCategoryStorageKey());
+        const songCategoriesData = safeGetLocalStorage(getSongCategoriesStorageKey());
+        
+        if (categoriesData) {
+            categoryState.categories = JSON.parse(categoriesData);
+        }
+        if (songCategoriesData) {
+            categoryState.songCategories = JSON.parse(songCategoriesData);
+        }
+    } catch (e) {
+        console.error('Failed to load categories:', e);
+        categoryState.categories = [];
+        categoryState.songCategories = {};
+    }
+}
+
+function saveCategories() {
+    try {
+        safeSetLocalStorage(getCategoryStorageKey(), JSON.stringify(categoryState.categories));
+        safeSetLocalStorage(getSongCategoriesStorageKey(), JSON.stringify(categoryState.songCategories));
+    } catch (e) {
+        console.error('Failed to save categories:', e);
+    }
+}
+
+function generateCategoryId() {
+    return 'cat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+function getCategoryColor(index) {
+    return CATEGORY_COLORS[index % CATEGORY_COLORS.length];
+}
+
+function createCategory(name) {
+    const category = {
+        id: generateCategoryId(),
+        name: name.trim(),
+        color: getCategoryColor(categoryState.categories.length),
+        createdAt: Date.now()
+    };
+    categoryState.categories.push(category);
+    saveCategories();
+    renderCategoryChips();
+    return category;
+}
+
+function deleteCategory(categoryId) {
+    categoryState.categories = categoryState.categories.filter(c => c.id !== categoryId);
+    
+    // Remove category from all songs
+    Object.keys(categoryState.songCategories).forEach(songKey => {
+        categoryState.songCategories[songKey] = categoryState.songCategories[songKey]
+            .filter(id => id !== categoryId);
+        if (categoryState.songCategories[songKey].length === 0) {
+            delete categoryState.songCategories[songKey];
+        }
+    });
+    
+    if (categoryState.activeFilter === categoryId) {
+        categoryState.activeFilter = 'all';
+    }
+    
+    saveCategories();
+    renderCategoryChips();
+    renderPlaylist();
+}
+
+function renameCategory(categoryId, newName) {
+    const category = categoryState.categories.find(c => c.id === categoryId);
+    if (category) {
+        category.name = newName.trim();
+        saveCategories();
+        renderCategoryChips();
+    }
+}
+
+function getSongCategoryIds(songKey) {
+    return categoryState.songCategories[songKey] || [];
+}
+
+function setSongCategories(songKey, categoryIds) {
+    if (categoryIds.length === 0) {
+        delete categoryState.songCategories[songKey];
+    } else {
+        categoryState.songCategories[songKey] = categoryIds;
+    }
+    saveCategories();
+}
+
+function toggleSongCategory(songKey, categoryId) {
+    const currentCategories = getSongCategoryIds(songKey);
+    const index = currentCategories.indexOf(categoryId);
+    
+    if (index === -1) {
+        currentCategories.push(categoryId);
+    } else {
+        currentCategories.splice(index, 1);
+    }
+    
+    setSongCategories(songKey, currentCategories);
+}
+
+function getCategorySongCount(categoryId) {
+    return Object.values(categoryState.songCategories)
+        .filter(cats => cats.includes(categoryId)).length;
+}
+
+function filterSongsByCategory(songs, categoryId) {
+    if (categoryId === 'all') return songs;
+    
+    return songs.filter(song => {
+        const songKey = getSongKey(song);
+        const songCategories = getSongCategoryIds(songKey);
+        return songCategories.includes(categoryId);
+    });
+}
+
+function initCategorySystem() {
+    loadCategories();
+    renderCategoryChips();
+    setupCategoryEventListeners();
+}
+
+function renderCategoryChips() {
+    const chipsContainer = document.getElementById('categoryChips');
+    if (!chipsContainer) return;
+    
+    // Keep the "all" chip
+    let html = `
+        <button class="category-chip ${categoryState.activeFilter === 'all' ? 'active' : ''}" data-category="all" type="button">
+            <i class="fas fa-list" aria-hidden="true"></i>
+            <span>全部</span>
+        </button>
+    `;
+    
+    categoryState.categories.forEach((category, index) => {
+        const count = getCategorySongCount(category.id);
+        html += `
+            <button class="category-chip ${categoryState.activeFilter === category.id ? 'active' : ''}" 
+                    data-category="${category.id}" 
+                    type="button"
+                    style="--chip-color: ${category.color}">
+                <i class="fas fa-circle" style="color: ${category.color}; font-size: 8px;" aria-hidden="true"></i>
+                <span>${escapeHtml(category.name)}</span>
+                ${count > 0 ? `<span class="category-chip-count">${count}</span>` : ''}
+            </button>
+        `;
+    });
+    
+    chipsContainer.innerHTML = html;
+}
+
+function setupCategoryEventListeners() {
+    // Category chip click
+    document.addEventListener('click', (e) => {
+        const chip = e.target.closest('.category-chip');
+        if (chip) {
+            const categoryId = chip.dataset.category;
+            categoryState.activeFilter = categoryId;
+            renderCategoryChips();
+            renderPlaylist();
+        }
+    });
+    
+    // Add category button
+    const addBtn = document.getElementById('addCategoryBtn');
+    if (addBtn) {
+        addBtn.addEventListener('click', () => showCategoryDialog());
+    }
+    
+    // Manage category button
+    const manageBtn = document.getElementById('manageCategoryBtn');
+    if (manageBtn) {
+        manageBtn.addEventListener('click', () => showCategoryManageDialog());
+    }
+    
+    // Right-click on playlist item to show category menu
+    document.addEventListener('contextmenu', (e) => {
+        const playlistItem = e.target.closest('.playlist-item');
+        if (playlistItem && !playlistItem.closest('.favorites')) {
+            e.preventDefault();
+            const index = parseInt(playlistItem.dataset.index);
+            if (!isNaN(index) && state.playlistSongs[index]) {
+                showCategoryContextMenu(e.clientX, e.clientY, state.playlistSongs[index], index);
+            }
+        }
+    });
+}
+
+function showCategoryDialog(editCategory = null) {
+    const isEdit = editCategory !== null;
+    const title = isEdit ? '重命名分类' : '添加分类';
+    const defaultValue = isEdit ? editCategory.name : '';
+    const buttonText = isEdit ? '保存' : '添加';
+    
+    const dialog = document.createElement('div');
+    dialog.className = 'category-dialog';
+    dialog.innerHTML = `
+        <div class="category-dialog__content">
+            <h3 class="category-dialog__title">${title}</h3>
+            <input type="text" 
+                   class="category-dialog__input" 
+                   id="categoryNameInput"
+                   placeholder="输入分类名称..."
+                   value="${escapeHtml(defaultValue)}"
+                   maxlength="20">
+            <div class="category-dialog__actions">
+                <button class="category-dialog__btn" id="categoryDialogCancel" type="button">取消</button>
+                ${isEdit ? `<button class="category-dialog__btn category-dialog__btn--danger" id="categoryDialogDelete" type="button">删除</button>` : ''}
+                <button class="category-dialog__btn category-dialog__btn--primary" id="categoryDialogConfirm" type="button">${buttonText}</button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(dialog);
+    
+    const input = dialog.querySelector('#categoryNameInput');
+    const cancelBtn = dialog.querySelector('#categoryDialogCancel');
+    const confirmBtn = dialog.querySelector('#categoryDialogConfirm');
+    const deleteBtn = dialog.querySelector('#categoryDialogDelete');
+    
+    input.focus();
+    input.select();
+    
+    const close = () => {
+        dialog.remove();
+        document.removeEventListener('keydown', handleEsc);
+    };
+    
+    const handleEsc = (e) => {
+        if (e.key === 'Escape') close();
+    };
+    document.addEventListener('keydown', handleEsc);
+    
+    cancelBtn.addEventListener('click', close);
+    
+    dialog.addEventListener('click', (e) => {
+        if (e.target === dialog) close();
+    });
+    
+    confirmBtn.addEventListener('click', () => {
+        const name = input.value.trim();
+        if (!name) {
+            input.style.borderColor = '#ef4444';
+            return;
+        }
+        
+        if (isEdit) {
+            renameCategory(editCategory.id, name);
+        } else {
+            createCategory(name);
+        }
+        close();
+    });
+    
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            confirmBtn.click();
+        }
+    });
+    
+    if (deleteBtn) {
+        deleteBtn.addEventListener('click', () => {
+            if (confirm(`确定要删除分类"${editCategory.name}"吗？\n该分类下的歌曲不会被删除。`)) {
+                deleteCategory(editCategory.id);
+                close();
+            }
+        });
+    }
+}
+
+function showCategoryManageDialog() {
+    const dialog = document.createElement('div');
+    dialog.className = 'category-dialog';
+    
+    let listHtml = '';
+    categoryState.categories.forEach((category, index) => {
+        const count = getCategorySongCount(category.id);
+        listHtml += `
+            <div class="category-manage-item">
+                <i class="fas fa-circle" style="color: ${category.color}; font-size: 10px;"></i>
+                <span class="category-manage-item__name">${escapeHtml(category.name)}</span>
+                <span class="category-manage-item__count">${count} 首</span>
+                <div class="category-manage-item__actions">
+                    <button class="category-manage-item__btn" data-action="edit" data-id="${category.id}" title="编辑">
+                        <i class="fas fa-pen"></i>
+                    </button>
+                    <button class="category-manage-item__btn category-manage-item__btn--delete" data-action="delete" data-id="${category.id}" title="删除">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+        `;
+    });
+    
+    dialog.innerHTML = `
+        <div class="category-dialog__content">
+            <h3 class="category-dialog__title">管理分类</h3>
+            <div class="category-manage-list">
+                ${listHtml || '<div style="text-align: center; color: var(--text-secondary-color); padding: 20px;">暂无分类</div>'}
+            </div>
+            <div class="category-dialog__actions">
+                <button class="category-dialog__btn" id="categoryManageClose" type="button">关闭</button>
+                <button class="category-dialog__btn category-dialog__btn--primary" id="categoryManageAdd" type="button">
+                    <i class="fas fa-plus" style="margin-right: 6px;"></i>添加分类
+                </button>
+            </div>
+        </div>
+    `;
+    
+    document.body.appendChild(dialog);
+    
+    const close = () => {
+        dialog.remove();
+        document.removeEventListener('keydown', handleEsc);
+    };
+    
+    const handleEsc = (e) => {
+        if (e.key === 'Escape') close();
+    };
+    document.addEventListener('keydown', handleEsc);
+    
+    dialog.querySelector('#categoryManageClose').addEventListener('click', close);
+    
+    dialog.addEventListener('click', (e) => {
+        if (e.target === dialog) close();
+        
+        const actionBtn = e.target.closest('[data-action]');
+        if (actionBtn) {
+            const action = actionBtn.dataset.action;
+            const categoryId = actionBtn.dataset.id;
+            const category = categoryState.categories.find(c => c.id === categoryId);
+            
+            if (action === 'edit' && category) {
+                close();
+                showCategoryDialog(category);
+            } else if (action === 'delete' && category) {
+                const count = getCategorySongCount(category.id);
+                const message = count > 0 
+                    ? `确定要删除分类"${category.name}"吗？\n该分类下有 ${count} 首歌曲，歌曲不会被删除。`
+                    : `确定要删除分类"${category.name}"吗？`;
+                if (confirm(message)) {
+                    deleteCategory(categoryId);
+                    close();
+                    showCategoryManageDialog();
+                }
+            }
+        }
+    });
+    
+    dialog.querySelector('#categoryManageAdd').addEventListener('click', () => {
+        close();
+        showCategoryDialog();
+    });
+}
+
+function showCategoryContextMenu(x, y, song, songIndex) {
+    // Remove existing menu
+    const existingMenu = document.querySelector('.category-context-menu');
+    if (existingMenu) existingMenu.remove();
+    
+    const songKey = getSongKey(song);
+    const songCategories = getSongCategoryIds(songKey);
+    
+    const menu = document.createElement('div');
+    menu.className = 'category-context-menu';
+    
+    let menuHtml = '<div class="category-context-menu__header">添加到分类</div>';
+    
+    if (categoryState.categories.length === 0) {
+        menuHtml += '<div class="category-context-menu__item" style="opacity: 0.6; cursor: default;">暂无分类，请先创建</div>';
+    } else {
+        categoryState.categories.forEach(category => {
+            const isInCategory = songCategories.includes(category.id);
+            menuHtml += `
+                <button class="category-context-menu__item" data-category-id="${category.id}" type="button">
+                    <span class="check-icon">${isInCategory ? '✓' : ''}</span>
+                    <i class="fas fa-circle" style="color: ${category.color}; font-size: 8px;"></i>
+                    <span>${escapeHtml(category.name)}</span>
+                </button>
+            `;
+        });
+    }
+    
+    menuHtml += '<div class="category-context-menu__divider"></div>';
+    menuHtml += '<button class="category-context-menu__item" data-action="create-category" type="button"><i class="fas fa-plus"></i> 新建分类...</button>';
+    
+    menu.innerHTML = menuHtml;
+    
+    // Position menu
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    
+    document.body.appendChild(menu);
+    
+    // Adjust position if menu goes off screen
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+        menu.style.left = `${x - rect.width}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+        menu.style.top = `${y - rect.height}px`;
+    }
+    
+    // Handle menu clicks
+    menu.addEventListener('click', (e) => {
+        const item = e.target.closest('.category-context-menu__item');
+        if (!item) return;
+        
+        const categoryId = item.dataset.categoryId;
+        const action = item.dataset.action;
+        
+        if (action === 'create-category') {
+            showCategoryDialog();
+        } else if (categoryId) {
+            toggleSongCategory(songKey, categoryId);
+            renderPlaylist();
+        }
+        
+        menu.remove();
+    });
+    
+    // Close menu on outside click
+    const closeMenu = (e) => {
+        if (!menu.contains(e.target)) {
+            menu.remove();
+            document.removeEventListener('click', closeMenu);
+            document.removeEventListener('contextmenu', closeMenu);
+        }
+    };
+    
+    setTimeout(() => {
+        document.addEventListener('click', closeMenu);
+        document.addEventListener('contextmenu', closeMenu);
+    }, 0);
+}
+
+// Patch renderPlaylist to support category filtering
+const originalRenderPlaylist = renderPlaylist;
+renderPlaylist = function() {
+    if (!dom.playlistItems) return;
+
+    const filteredSongs = filterSongsByCategory(state.playlistSongs, categoryState.activeFilter);
+    
+    if (state.playlistSongs.length === 0) {
+        dom.playlist.classList.add("empty");
+        dom.playlistItems.innerHTML = "";
+        savePlayerState();
+        updateFavoriteIcons();
+        updatePlaylistHighlight();
+        updateMobileClearPlaylistVisibility();
+        updatePlaylistActionStates();
+        return;
+    }
+    
+    if (filteredSongs.length === 0 && categoryState.activeFilter !== 'all') {
+        dom.playlist.classList.remove("empty");
+        dom.playlistItems.innerHTML = `
+            <div style="text-align: center; padding: 40px 20px; color: var(--text-secondary-color);">
+                <i class="fas fa-folder-open" style="font-size: 32px; margin-bottom: 12px; opacity: 0.5;"></i>
+                <p>该分类下暂无歌曲</p>
+                <p style="font-size: 13px; margin-top: 8px;">右键点击歌曲可添加到分类</p>
+            </div>
+        `;
+        return;
+    }
+
+    dom.playlist.classList.remove("empty");
+    const songsToRender = categoryState.activeFilter === 'all' ? state.playlistSongs : filteredSongs;
+    
+    const playlistHtml = songsToRender.map((song, displayIndex) => {
+        const realIndex = state.playlistSongs.indexOf(song);
+        const artistValue = Array.isArray(song.artist)
+            ? song.artist.join(", ")
+            : (song.artist || "未知艺术家");
+        const songKey = getSongKey(song) || `playlist-${realIndex}`;
+        const songCategories = getSongCategoryIds(songKey);
+        
+        let categoryDots = '';
+        if (songCategories.length > 0) {
+            const dots = songCategories.slice(0, 3).map(catId => {
+                const cat = categoryState.categories.find(c => c.id === catId);
+                return cat ? `<span class="song-category-dot" style="background: ${cat.color};" title="${escapeHtml(cat.name)}"></span>` : '';
+            }).join('');
+            categoryDots = `<span class="song-category-dots">${dots}</span>`;
+        }
+        
+        return `
+        <div class="playlist-item" data-index="${realIndex}" role="button" tabindex="0" aria-label="播放 ${song.name}" data-favorite-key="${songKey}">
+            ${song.name} - ${artistValue}${categoryDots}
+            <button class="playlist-item-favorite favorite-toggle" type="button" data-playlist-action="favorite" data-index="${realIndex}" data-favorite-key="${songKey}" title="收藏" aria-label="收藏">
+                <i class="fa-regular fa-heart"></i>
+            </button>
+            <button class="playlist-item-download" type="button" data-playlist-action="download" data-index="${realIndex}" title="下载">
+                <i class="fas fa-download"></i>
+            </button>
+            <button class="playlist-item-remove" type="button" data-playlist-action="remove" data-index="${realIndex}" title="从播放列表移除">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>`;
+    }).join("");
+
+    dom.playlistItems.innerHTML = playlistHtml;
+    savePlayerState();
+    updateFavoriteIcons();
+    updatePlaylistHighlight();
+    updateMobileClearPlaylistVisibility();
+    updatePlaylistActionStates();
+};
+
+// Export/import category data
+function exportCategories() {
+    const data = {
+        version: 1,
+        categories: categoryState.categories,
+        songCategories: categoryState.songCategories
+    };
+    
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `solara-categories-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    showNotification('分类数据已导出', 'success');
+}
+
+function importCategories(file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (data.version && data.categories && data.songCategories) {
+                categoryState.categories = data.categories;
+                categoryState.songCategories = data.songCategories;
+                saveCategories();
+                renderCategoryChips();
+                renderPlaylist();
+                showNotification('分类数据已导入', 'success');
+            } else {
+                showNotification('无效的分类数据文件', 'error');
+            }
+        } catch (err) {
+            showNotification('解析分类文件失败', 'error');
+        }
+    };
+    reader.readAsText(file);
+}
+
+// Expose to global scope for debugging
+window.categoryState = categoryState;
+window.exportCategories = exportCategories;
+window.importCategories = importCategories;
