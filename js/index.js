@@ -3683,8 +3683,8 @@ function setupInteractions() {
         handleSearchInputFocus();
     });
 
-    dom.searchInput.addEventListener("keypress", (e) => {
-        if (e.key === "Enter") {
+    dom.searchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) {
             e.preventDefault();
             e.stopPropagation();
             debugLog("搜索输入框回车键被按下");
@@ -5546,6 +5546,16 @@ function updatePlaylistHighlight() {
     });
 }
 
+function patchSongInLists(oldSong, idPatch) {
+    [state.playlistSongs, state.favoriteSongs, state.searchResults].forEach(list => {
+        const idx = list.findIndex(s => s.id === oldSong.id && s.source === oldSong.source);
+        if (idx !== -1) list[idx] = { ...list[idx], ...idPatch };
+    });
+    if (state.currentSong && state.currentSong.id === oldSong.id && state.currentSong.source === oldSong.source) {
+        state.currentSong = { ...state.currentSong, ...idPatch };
+    }
+}
+
 // 修复：播放歌曲函数 - 支持统一播放列表
 function waitForAudioReady(player) {
     if (!player) return Promise.resolve();
@@ -5584,10 +5594,55 @@ async function playSong(song, options = {}) {
         updateCurrentSongInfo(song, { loadArtwork: false });
 
         const quality = state.playbackQuality || '320';
-        const audioUrl = API.getSongUrl(song, quality);
-        debugLog(`获取音频URL: ${audioUrl}`);
+        const allQualities = [quality, ...QUALITY_OPTIONS.map(q => q.value).filter(q => q !== quality)];
 
-        const audioData = await API.fetchJson(audioUrl);
+        const tryGetAudioData = async (targetSong) => {
+            for (const q of allQualities) {
+                const url = API.getSongUrl(targetSong, q);
+                debugLog(`获取音频URL (${q}): ${url}`);
+                try {
+                    const data = await API.fetchJson(url);
+                    if (data && data.url) {
+                        if (q !== quality) {
+                            showNotification(`当前音质不可用，已使用${QUALITY_OPTIONS.find(o => o.value === q)?.label || q}`, 'warning');
+                        }
+                        return data;
+                    }
+                } catch (e) {
+                    debugLog(`获取音频URL失败 (${q}): ${e.message}`);
+                }
+            }
+            return null;
+        };
+
+        let audioData = await tryGetAudioData(song);
+
+        if (!audioData) {
+            debugLog('所有音质均无法获取链接，尝试重新搜索...');
+            showNotification('链接失效，正在重新搜索...', 'info');
+            try {
+                const source = song.source || 'netease';
+                const keyword = [song.name, song.artist].filter(Boolean).join(' ');
+                const results = await API.search(keyword, source, 5, 1);
+                if (Array.isArray(results) && results.length > 0) {
+                    const freshSong = results.find(r => r.name === song.name && r.artist === song.artist)
+                        || results.find(r => r.name.toLowerCase() === song.name.toLowerCase())
+                        || results[0];
+                    if (freshSong) {
+                        const idPatch = { id: freshSong.id, url_id: freshSong.url_id, lyric_id: freshSong.lyric_id, pic_id: freshSong.pic_id, source: freshSong.source };
+                        const patchedSong = { ...song, ...idPatch };
+                        audioData = await tryGetAudioData(patchedSong);
+                        if (audioData) {
+                            patchSongInLists(song, idPatch);
+                            song = patchedSong;
+                            showNotification('已自动刷新歌曲链接', 'success');
+                        }
+                    }
+                }
+            } catch (e) {
+                debugLog('重新搜索失败: ' + e.message);
+            }
+        }
 
         if (!audioData || !audioData.url) {
             throw new Error('无法获取音频播放地址');
@@ -5805,6 +5860,10 @@ function playNext() {
         playlist = state.onlineSongs;
     } else if (state.currentPlaylist === "search") {
         playlist = state.searchResults;
+    } else if (state.currentPlaylist === "favorites") {
+        state.currentList = "favorite";
+        playNext();
+        return;
     }
 
     if (playlist.length === 0) {
@@ -5871,6 +5930,10 @@ function playPrevious() {
         playlist = state.onlineSongs;
     } else if (state.currentPlaylist === "search") {
         playlist = state.searchResults;
+    } else if (state.currentPlaylist === "favorites") {
+        state.currentList = "favorite";
+        playPrevious();
+        return;
     }
 
     if (playlist.length === 0) return;
