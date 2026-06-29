@@ -2,7 +2,8 @@ version: '3.8'
 
 services:
   solara:
-    image: ghcr.io/akudamatata/solara:latest
+    image: ghcr.io/luzhongxi/solaramusic:latest
+
     container_name: solara
     restart: always
     ports:

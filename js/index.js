@@ -5620,27 +5620,42 @@ async function playSong(song, options = {}) {
         if (!audioData) {
             debugLog('所有音质均无法获取链接，尝试重新搜索...');
             showNotification('链接失效，正在重新搜索...', 'info');
-            try {
-                const source = song.source || 'netease';
+
+            const trySearchSource = async (searchSource) => {
                 const keyword = [song.name, song.artist].filter(Boolean).join(' ');
-                const results = await API.search(keyword, source, 5, 1);
-                if (Array.isArray(results) && results.length > 0) {
-                    const freshSong = results.find(r => r.name === song.name && r.artist === song.artist)
-                        || results.find(r => r.name.toLowerCase() === song.name.toLowerCase())
-                        || results[0];
-                    if (freshSong) {
-                        const idPatch = { id: freshSong.id, url_id: freshSong.url_id, lyric_id: freshSong.lyric_id, pic_id: freshSong.pic_id, source: freshSong.source };
-                        const patchedSong = { ...song, ...idPatch };
-                        audioData = await tryGetAudioData(patchedSong);
-                        if (audioData) {
-                            patchSongInLists(song, idPatch);
-                            song = patchedSong;
-                            showNotification('已自动刷新歌曲链接', 'success');
-                        }
+                const results = await API.search(keyword, searchSource, 5, 1);
+                if (!Array.isArray(results) || results.length === 0) return null;
+                const freshSong = results.find(r => r.name === song.name && r.artist === song.artist)
+                    || results.find(r => r.name.toLowerCase() === song.name.toLowerCase())
+                    || results[0];
+                if (!freshSong) return null;
+                const idPatch = { id: freshSong.id, url_id: freshSong.url_id, lyric_id: freshSong.lyric_id, pic_id: freshSong.pic_id, source: freshSong.source };
+                const patchedSong = { ...song, ...idPatch };
+                const data = await tryGetAudioData(patchedSong);
+                if (data) return { data, patchedSong, idPatch };
+                return null;
+            };
+
+            const originalSource = song.source || 'netease';
+            const fallbackSources = SOURCE_OPTIONS.map(o => o.value).filter(s => s !== originalSource);
+            const searchOrder = [originalSource, ...fallbackSources];
+
+            for (const searchSource of searchOrder) {
+                const isOriginal = searchSource === originalSource;
+                debugLog(`在 ${searchSource} 平台重新搜索...`);
+                try {
+                    const found = await trySearchSource(searchSource);
+                    if (found) {
+                        audioData = found.data;
+                        patchSongInLists(song, found.idPatch);
+                        song = found.patchedSong;
+                        const label = SOURCE_OPTIONS.find(o => o.value === searchSource)?.label || searchSource;
+                        showNotification(isOriginal ? '已自动刷新歌曲链接' : `原平台失效，已从 ${label} 找到替代`, 'success');
+                        break;
                     }
+                } catch (e) {
+                    debugLog(`在 ${searchSource} 搜索失败: ${e.message}`);
                 }
-            } catch (e) {
-                debugLog('重新搜索失败: ' + e.message);
             }
         }
 
