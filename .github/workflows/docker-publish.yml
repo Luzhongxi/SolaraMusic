@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'js/**'
+      - 'css/**'
+      - 'functions/**'
+      - 'index.html'
+      - 'Dockerfile'
+      - 'docker-entrypoint.sh'
+      - 'package*.json'
     tags:
       - 'v*'
   workflow_dispatch:
